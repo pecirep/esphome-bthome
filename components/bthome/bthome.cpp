@@ -10,7 +10,10 @@
 // Platform-specific includes
 #ifdef USE_ESP32
   #ifdef USE_BTHOME_NIMBLE
-    #include "esp_nimble_hci.h"
+    // ESP32-C6 uses an integrated controller with no VHCI layer; esp_nimble_hci.h is not available
+    #ifndef CONFIG_IDF_TARGET_ESP32C6
+      #include "esp_nimble_hci.h"
+    #endif
     #include "nimble/nimble_port.h"
     #include "nimble/nimble_port_freertos.h"
     #include "host/ble_hs.h"
