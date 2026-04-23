@@ -83,6 +83,9 @@ void BTHome::dump_config() {
 #ifdef USE_BINARY_SENSOR
   ESP_LOGCONFIG(TAG, "  Binary Sensors: %d", this->binary_measurements_.size());
 #endif
+#ifdef USE_TEXT_SENSOR
+  ESP_LOGCONFIG(TAG, "  Text Sensors: %d", this->text_measurements_.size());
+#endif
 }
 
 float BTHome::get_setup_priority() const {
@@ -211,6 +214,27 @@ void BTHome::setup() {
   }
 #endif
 
+#ifdef USE_TEXT_SENSOR
+  for (size_t i = 0; i < this->text_measurements_.size(); i++) {
+    this->text_measurements_[i].sensor->add_on_state_callback([this, i](const std::string &) {
+      if (this->text_measurements_[i].advertise_immediately) {
+        this->immediate_advertising_pending_ = true;
+        this->immediate_adv_measurement_index_ = static_cast<uint8_t>(i);
+        this->immediate_adv_is_binary_ = false;
+        this->immediate_adv_is_text_ = true;
+#ifdef USE_ESP32
+        this->enable_loop();
+#endif
+      } else {
+        this->data_changed_ = true;
+#ifdef USE_ESP32
+        this->enable_loop();
+#endif
+      }
+    });
+  }
+#endif
+
 #ifdef USE_NRF52
   // nRF52: Build and start advertising immediately
   this->build_advertisement_data_();
@@ -315,10 +339,17 @@ void BTHome::add_binary_measurement(binary_sensor::BinarySensor *sensor, uint8_t
 }
 #endif
 
+#ifdef USE_TEXT_SENSOR
+void BTHome::add_text_measurement(text_sensor::TextSensor *sensor, uint8_t object_id, bool is_raw, bool advertise_immediately) {
+  this->text_measurements_.push_back({sensor, object_id, is_raw, advertise_immediately});
+}
+#endif
+
 void BTHome::trigger_immediate_advertising_(uint8_t measurement_index, bool is_binary) {
   this->immediate_advertising_pending_ = true;
   this->immediate_adv_measurement_index_ = measurement_index;
   this->immediate_adv_is_binary_ = is_binary;
+  this->immediate_adv_is_text_ = false;
 #ifdef USE_ESP32
   this->enable_loop();
 #endif
@@ -369,8 +400,16 @@ void BTHome::build_advertisement_data_() {
       }
     }
 #endif
+#ifdef USE_TEXT_SENSOR
+    if (this->immediate_adv_is_text_) {
+      auto &measurement = this->text_measurements_[this->immediate_adv_measurement_index_];
+      if (measurement.sensor->has_state()) {
+        pos += this->encode_text_measurement_(this->adv_data_ + pos, MAX_BLE_ADVERTISEMENT_SIZE - pos, measurement);
+      }
+    }
+#endif
 #ifdef USE_SENSOR
-    if (!this->immediate_adv_is_binary_) {
+    if (!this->immediate_adv_is_binary_ && !this->immediate_adv_is_text_) {
       auto &measurement = this->measurements_[this->immediate_adv_measurement_index_];
       if (measurement.sensor->has_state() && !std::isnan(measurement.sensor->state)) {
         pos += this->encode_measurement_(this->adv_data_ + pos, MAX_BLE_ADVERTISEMENT_SIZE - pos, measurement);
@@ -437,7 +476,37 @@ void BTHome::build_advertisement_data_() {
       }
     }
 #endif
-  }
+
+#ifdef USE_TEXT_SENSOR
+    if (!this->text_measurements_.empty()) {
+      size_t start_idx = this->current_text_index_;
+      size_t count = this->text_measurements_.size();
+      size_t added = 0;
+
+      for (size_t i = 0; i < count; i++) {
+        size_t idx = (start_idx + i) % count;
+        const auto &measurement = this->text_measurements_[idx];
+
+        if (!measurement.sensor->has_state())
+          continue;
+
+        // Estimate size: object_id (1) + length byte (1) + data
+        const std::string &val = measurement.sensor->state;
+        size_t data_len = measurement.is_raw ? (val.length() / 2) : val.length();
+        size_t encoded_size = 2 + data_len;
+        if (pos + encoded_size > MAX_BLE_ADVERTISEMENT_SIZE)
+          break;
+
+        pos += this->encode_text_measurement_(this->adv_data_ + pos, MAX_BLE_ADVERTISEMENT_SIZE - pos, measurement);
+        added++;
+      }
+
+      if (added > 0 && added < count) {
+        this->current_text_index_ = (start_idx + added) % count;
+      }
+    }
+#endif
+  }  // end else (normal rotation)
 
   size_t measurement_len = pos - measurement_start;
 
@@ -873,6 +942,61 @@ size_t BTHome::encode_binary_measurement_(uint8_t *data, size_t max_len, uint8_t
   data[0] = object_id;
   data[1] = value ? 0x01 : 0x00;
   return 2;
+}
+#endif
+
+#ifdef USE_TEXT_SENSOR
+size_t BTHome::encode_text_measurement_(uint8_t *data, size_t max_len, const TextSensorMeasurement &measurement) {
+  // Text/Raw sensors are variable-length: [object_id] [length] [data...]
+  // See: https://bthome.io/format/
+  //   0x53 - text: UTF-8 string encoded directly
+  //   0x54 - raw:  hex string decoded to raw bytes
+
+  const std::string &state = measurement.sensor->state;
+
+  if (measurement.is_raw) {
+    // Raw sensor: state is a hex string, decode to bytes
+    size_t hex_len = state.length();
+    if (hex_len % 2 != 0) {
+      ESP_LOGW(TAG, "Raw sensor has odd-length hex string, ignoring");
+      return 0;
+    }
+    size_t data_len = hex_len / 2;
+    size_t required = 2 + data_len;  // object_id + length + raw bytes
+    if (max_len < required) return 0;
+
+    data[0] = measurement.object_id;
+    data[1] = static_cast<uint8_t>(data_len);
+    for (size_t i = 0; i < data_len; i++) {
+      uint8_t byte_val = 0;
+      for (int j = 0; j < 2; j++) {
+        char c = state[i * 2 + j];
+        byte_val <<= 4;
+        if (c >= '0' && c <= '9') {
+          byte_val |= static_cast<uint8_t>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+          byte_val |= static_cast<uint8_t>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+          byte_val |= static_cast<uint8_t>(c - 'A' + 10);
+        } else {
+          ESP_LOGW(TAG, "Invalid hex character in raw sensor value, ignoring");
+          return 0;
+        }
+      }
+      data[2 + i] = byte_val;
+    }
+    return required;
+  } else {
+    // Text sensor: state is a UTF-8 string, encode directly
+    size_t str_len = state.length();
+    size_t required = 2 + str_len;  // object_id + length + string bytes
+    if (max_len < required) return 0;
+
+    data[0] = measurement.object_id;
+    data[1] = static_cast<uint8_t>(str_len);
+    memcpy(data + 2, state.c_str(), str_len);
+    return required;
+  }
 }
 #endif
 

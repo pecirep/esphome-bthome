@@ -11,7 +11,7 @@ Supports ESP32 (ESP-IDF) and nRF52 (Zephyr) platforms.
 """
 
 import esphome.codegen as cg
-from esphome.components import binary_sensor, sensor
+from esphome.components import binary_sensor, sensor, text_sensor
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_BINARY_SENSORS,
@@ -47,6 +47,7 @@ CONF_ADVERTISE_IMMEDIATELY = "advertise_immediately"
 CONF_TRIGGER_BASED = "trigger_based"
 CONF_RETRANSMIT_COUNT = "retransmit_count"
 CONF_RETRANSMIT_INTERVAL = "retransmit_interval"
+CONF_TEXT_SENSORS = "text_sensors"
 
 # =============================================================================
 # BTHome v2 Sensor Object IDs
@@ -117,6 +118,19 @@ SENSOR_TYPES = {
     "precipitation": (0x5F, 2, False, 0.1),     # uint16, 0.1 mm
     "channel": (0x60, 1, False, 1),             # uint8
     "rotational_speed": (0x61, 2, False, 1),    # uint16, 1 rpm
+}
+
+# =============================================================================
+# BTHome v2 Text/Raw Sensor Object IDs (variable-length)
+# See: https://bthome.io/format/
+#
+# Format: "type_name": (object_id, is_raw)
+#   - object_id: BTHome object identifier
+#   - is_raw: True = hex string → raw bytes, False = UTF-8 text string
+# =============================================================================
+TEXT_SENSOR_TYPES = {
+    "text": (0x53, False),   # UTF-8 string
+    "raw": (0x54, True),     # hex string decoded to raw bytes
 }
 
 # =============================================================================
@@ -252,6 +266,15 @@ CONFIG_SCHEMA = cv.All(
                     }
                 )
             ),
+            cv.Optional(CONF_TEXT_SENSORS): cv.ensure_list(
+                cv.Schema(
+                    {
+                        cv.Required(CONF_TYPE): cv.one_of(*TEXT_SENSOR_TYPES.keys(), lower=True),
+                        cv.Required(CONF_ID): cv.use_id(text_sensor.TextSensor),
+                        cv.Optional(CONF_ADVERTISE_IMMEDIATELY, default=False): cv.boolean,
+                    }
+                )
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     validate_config,
@@ -264,11 +287,13 @@ async def to_code(config):
     # Calculate sizes for StaticVector compile-time allocation
     num_sensors = max(1, len(config.get(CONF_SENSORS, [])))
     num_binary_sensors = max(1, len(config.get(CONF_BINARY_SENSORS, [])))
-    max_packets = max(1, num_sensors + num_binary_sensors)
+    num_text_sensors = max(1, len(config.get(CONF_TEXT_SENSORS, [])))
+    max_packets = max(1, num_sensors + num_binary_sensors + num_text_sensors)
 
     # Add defines for compile-time sizes
     cg.add_define("BTHOME_MAX_MEASUREMENTS", num_sensors)
     cg.add_define("BTHOME_MAX_BINARY_MEASUREMENTS", num_binary_sensors)
+    cg.add_define("BTHOME_MAX_TEXT_MEASUREMENTS", num_text_sensors)
     cg.add_define("BTHOME_MAX_ADV_PACKETS", max_packets)
 
     var = cg.new_Pvariable(config[CONF_ID])
@@ -314,6 +339,15 @@ async def to_code(config):
             sens = await cg.get_variable(measurement[CONF_ID])
             advertise_immediately = measurement[CONF_ADVERTISE_IMMEDIATELY]
             cg.add(var.add_binary_measurement(sens, object_id, advertise_immediately))
+
+    # Add text/raw sensor measurements
+    if CONF_TEXT_SENSORS in config:
+        for measurement in config[CONF_TEXT_SENSORS]:
+            sensor_type = measurement[CONF_TYPE]
+            object_id, is_raw = TEXT_SENSOR_TYPES[sensor_type]
+            sens = await cg.get_variable(measurement[CONF_ID])
+            advertise_immediately = measurement[CONF_ADVERTISE_IMMEDIATELY]
+            cg.add(var.add_text_measurement(sens, object_id, is_raw, advertise_immediately))
 
     # Platform-specific setup
     if CORE.is_esp32:

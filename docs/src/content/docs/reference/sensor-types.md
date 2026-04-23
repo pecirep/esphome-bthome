@@ -99,6 +99,8 @@ This page lists all sensor types supported by the BTHome component. Each type co
 | `precipitation` | 0x5F | 0.1 | mm | Rainfall |
 | `channel` | 0x60 | 1 | - | Channel number |
 | `rotational_speed` | 0x61 | 1 | rpm | Rotational speed |
+| `text` | 0x53 | N/A | N/A | Text string (UTF-8) |
+| `raw` | 0x54 | N/A | N/A | Raw data blob (hex-encoded) |
 
 ## Alternate Precision Temperature
 

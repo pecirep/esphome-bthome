@@ -9,6 +9,9 @@
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
+#ifdef USE_TEXT_SENSOR
+#include "esphome/components/text_sensor/text_sensor.h"
+#endif
 
 #include <array>
 
@@ -72,6 +75,15 @@ struct BinarySensorMeasurement {
 };
 #endif
 
+#ifdef USE_TEXT_SENSOR
+struct TextSensorMeasurement {
+  text_sensor::TextSensor *sensor;
+  uint8_t object_id;
+  bool is_raw;              // True = decode hex string to bytes, False = encode UTF-8 directly
+  bool advertise_immediately;
+};
+#endif
+
 #if defined(USE_ESP32) && defined(USE_BTHOME_BLUEDROID)
 using namespace esp32_ble;
 
@@ -109,6 +121,9 @@ class BTHome : public Component {
 #ifdef USE_BINARY_SENSOR
   void add_binary_measurement(binary_sensor::BinarySensor *sensor, uint8_t object_id, bool advertise_immediately);
 #endif
+#ifdef USE_TEXT_SENSOR
+  void add_text_measurement(text_sensor::TextSensor *sensor, uint8_t object_id, bool is_raw, bool advertise_immediately);
+#endif
 
 #if defined(USE_ESP32) && defined(USE_BTHOME_BLUEDROID)
   void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) override;
@@ -125,6 +140,9 @@ class BTHome : public Component {
 #ifdef USE_BINARY_SENSOR
   size_t encode_binary_measurement_(uint8_t *data, size_t max_len, uint8_t object_id, bool value);
 #endif
+#ifdef USE_TEXT_SENSOR
+  size_t encode_text_measurement_(uint8_t *data, size_t max_len, const TextSensorMeasurement &measurement);
+#endif
   bool encrypt_payload_(const uint8_t *plaintext, size_t plaintext_len, uint8_t *ciphertext, size_t *ciphertext_len);
   void trigger_immediate_advertising_(uint8_t measurement_index, bool is_binary);
 
@@ -134,6 +152,9 @@ class BTHome : public Component {
 #endif
 #ifdef USE_BINARY_SENSOR
   StaticVector<BinarySensorMeasurement, BTHOME_MAX_BINARY_MEASUREMENTS> binary_measurements_;
+#endif
+#ifdef USE_TEXT_SENSOR
+  StaticVector<TextSensorMeasurement, BTHOME_MAX_TEXT_MEASUREMENTS> text_measurements_;
 #endif
 
   // Common settings
@@ -169,6 +190,7 @@ class BTHome : public Component {
   // Measurement rotation (for splitting across multiple packets)
   size_t current_sensor_index_{0};
   size_t current_binary_index_{0};
+  size_t current_text_index_{0};
 
   // Scan response data (device name + manufacturer)
   uint8_t scan_rsp_data_[MAX_BLE_ADVERTISEMENT_SIZE];
@@ -178,6 +200,7 @@ class BTHome : public Component {
   bool immediate_advertising_pending_{false};
   uint8_t immediate_adv_measurement_index_{0};
   bool immediate_adv_is_binary_{false};
+  bool immediate_adv_is_text_{false};
 
   // Platform-specific members
 #ifdef USE_ESP32
